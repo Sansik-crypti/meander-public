@@ -4,34 +4,39 @@ name: Build Modified Meander APK
 on:
   workflow_dispatch:
   push:
+    branches:
+      - main
     paths:
       - "meander-modern-ui.zip"
       - ".github/workflows/build_modified_meander.yml"
-    branches:
-      - main
 
 permissions:
   contents: read
 
 jobs:
   build:
+    name: Build Android APK
     runs-on: ubuntu-latest
     timeout-minutes: 90
+
+    env:
+      RUST_BACKTRACE: "1"
+      CARGO_TERM_VERBOSE: "true"
+      CARGO_TERM_COLOR: "always"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Check and extract modified project
+        shell: bash
         run: |
-          set -e
-          test -f meander-modern-ui.zip || {
-            echo "::error::Upload meander-modern-ui.zip to the repository root."
-            exit 1
-          }
+          set -euxo pipefail
+          test -f meander-modern-ui.zip
           mkdir -p extracted
           unzip -q meander-modern-ui.zip -d extracted
           test -f extracted/meander-public-main/pubspec.yaml
+          test -f extracted/meander-public-main/scripts/build_quest_apk.sh
 
       - name: Setup Java
         uses: actions/setup-java@v4
@@ -39,16 +44,14 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Install Android NDK
+      - name: Setup Android NDK
+        shell: bash
         run: |
-          set -e
+          set -euxo pipefail
           sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
-          ndk_dir="$ANDROID_HOME/ndk/28.2.13676358"
-          if [ ! -f "$ndk_dir/source.properties" ]; then
-            yes | "$sdkmanager" "ndk;28.2.13676358" || true
-          fi
-          test -f "$ndk_dir/source.properties"
-          echo "ANDROID_NDK_HOME=$ndk_dir" >> "$GITHUB_ENV"
+          "$sdkmanager" --install "ndk;28.2.13676358"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+          echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -57,6 +60,9 @@ jobs:
 
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            extracted/meander-public-main
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
@@ -70,8 +76,9 @@ jobs:
 
       - name: Build quest player template
         working-directory: extracted/meander-public-main
+        shell: bash
         run: |
-          set -e
+          set -euxo pipefail
           bash ./scripts/build_quest_apk.sh quests/demo.mnd \
             --name "Meander Quest" \
             --id sbs.meander.quest.player \
@@ -84,24 +91,48 @@ jobs:
             "$assets/quest_player_template.apk"
           rm -rf apps/quest_player/build
 
-      - name: Build modified APK
+      - name: Get Flutter dependencies
         working-directory: extracted/meander-public-main/apps/main_app
+        run: flutter pub get
+
+      - name: Build modified APK with verbose diagnostics
+        working-directory: extracted/meander-public-main/apps/main_app
+        shell: bash
+        env:
+          RUST_BACKTRACE: "full"
+          CARGO_TERM_VERBOSE: "true"
+          CARGO_PROFILE_RELEASE_DEBUG: "true"
         run: |
-          set -e
-          flutter pub get
+          set -euxo pipefail
           flutter build apk --release --flavor prod \
             --target-platform android-arm64 \
             --android-project-arg=debugSignRelease=true \
-            --android-project-arg=ffiAbis=arm64-v8a
+            --android-project-arg=ffiAbis=arm64-v8a \
+            --verbose 2>&1 | tee "$RUNNER_TEMP/flutter-build.log"
 
-          mkdir -p "$GITHUB_WORKSPACE/dist"
-          cp build/app/outputs/flutter-apk/app-prod-release.apk \
-            "$GITHUB_WORKSPACE/dist/meander-modified-arm64.apk"
+      - name: Upload build log even if build fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: meander-build-log
+          path: ${{ runner.temp }}/flutter-build.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Prepare APK artifact
+        if: success()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p dist
+          cp extracted/meander-public-main/apps/main_app/build/app/outputs/flutter-apk/app-prod-release.apk \
+            dist/meander-modified-arm64.apk
 
       - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: meander-modified-android
-          path: dist/*.apk
+          path: dist/meander-modified-arm64.apk
           if-no-files-found: error
           retention-days: 14
