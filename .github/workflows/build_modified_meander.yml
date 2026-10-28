@@ -1,14 +1,11 @@
-name: Build Modified Meander APK
+name: Build Meander MOD APK
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
     paths:
       - "meander-modern-ui.zip"
       - ".github/workflows/build_modified_meander.yml"
-      - ".github/workflows/build_modified_meander_fixed.yml"
 
 permissions:
   contents: read
@@ -19,31 +16,26 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
-      FLUTTER_VERSION: "3.47.0"
+      FLUTTER_VERSION: "3.35.7"
       NDK_VERSION: "28.2.13676358"
       RUST_BACKTRACE: "1"
       CARGO_TERM_VERBOSE: "true"
-
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
-      - name: Check and extract modified project
+      - name: Check and extract project
         shell: bash
         run: |
           set -euxo pipefail
-          test -f meander-modern-ui.zip || {
-            echo "::error::Upload meander-modern-ui.zip to the repository root."
-            exit 1
-          }
+          test -f meander-modern-ui.zip || { echo "meander-modern-ui.zip missing from repository root"; exit 1; }
           mkdir -p extracted
           unzip -q meander-modern-ui.zip -d extracted
           test -f extracted/meander-public-main/pubspec.yaml
-          test -f extracted/meander-public-main/apps/main_app/android/app/build.gradle.kts
           echo "PROJECT_DIR=$GITHUB_WORKSPACE/extracted/meander-public-main" >> "$GITHUB_ENV"
 
       - name: Setup Java
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
@@ -61,8 +53,6 @@ jobs:
           echo "ANDROID_NDK_HOME=$ndk_dir" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ndk_dir" >> "$GITHUB_ENV"
 
-      # Gradle's buildMndFfiAndroid task builds all four ABIs, regardless of
-      # --target-platform=android-arm64. Install all four Rust targets.
       - name: Setup Rust Android targets
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -71,8 +61,7 @@ jobs:
       - name: Cache Rust
         uses: Swatinem/rust-cache@v2
         with:
-          workspaces: |
-            extracted/meander-public-main
+          workspaces: extracted/meander-public-main
 
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
@@ -89,35 +78,26 @@ jobs:
         run: |
           set -euxo pipefail
           cd "$PROJECT_DIR"
-          bash ./scripts/build_quest_apk.sh quests/demo.mnd \
-            --name "Meander Quest" \
-            --id sbs.meander.quest.player \
-            --abi arm64 \
-            --out "$RUNNER_TEMP/player"
+          bash ./scripts/build_quest_apk.sh quests/demo.mnd --name "Meander Quest" --id sbs.meander.quest.player --abi arm64 --out "$RUNNER_TEMP/player"
           assets=apps/main_app/android/app/src/main/assets
           mkdir -p "$assets"
-          cp "$RUNNER_TEMP/player/sbs.meander.quest.player-1.0.0.apk" \
-            "$assets/quest_player_template.apk"
+          cp "$RUNNER_TEMP/player/sbs.meander.quest.player-1.0.0.apk" "$assets/quest_player_template.apk"
           rm -rf apps/quest_player/build
 
       - name: Get Flutter dependencies
         working-directory: extracted/meander-public-main/apps/main_app
         run: flutter pub get
 
-      - name: Build modified APK with diagnostics
+      - name: Build APK with diagnostics
         working-directory: extracted/meander-public-main/apps/main_app
         shell: bash
         run: |
           set -euxo pipefail
-          flutter build apk --release --flavor prod \
-            --target-platform android-arm64 \
-            --android-project-arg=debugSignRelease=true \
-            --android-project-arg=ffiAbis=arm64-v8a \
-            --verbose 2>&1 | tee "$RUNNER_TEMP/flutter-build.log"
+          flutter build apk --release --flavor prod --target-platform android-arm64 --android-project-arg=debugSignRelease=true --android-project-arg=ffiAbis=arm64-v8a --verbose 2>&1 | tee "$RUNNER_TEMP/flutter-build.log"
 
       - name: Upload build log if available
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
           name: meander-build-log
           path: ${{ runner.temp }}/flutter-build.log
@@ -130,14 +110,13 @@ jobs:
         run: |
           set -euxo pipefail
           mkdir -p dist
-          cp extracted/meander-public-main/apps/main_app/build/app/outputs/flutter-apk/app-prod-release.apk \
-            dist/meander-modified-arm64.apk
+          cp extracted/meander-public-main/apps/main_app/build/app/outputs/flutter-apk/app-prod-release.apk dist/meander-modified-arm64.apk
 
       - name: Upload APK
         if: success()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v4
         with:
-          name: meander-modified-android
+          name: meander-mod-apk
           path: dist/meander-modified-arm64.apk
           if-no-files-found: error
           retention-days: 14
